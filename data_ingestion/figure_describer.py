@@ -13,7 +13,7 @@ import logging
 from pathlib import Path
 
 from backend.guardrails import neutralize
-from backend.llm import LLMOutputError, LLMUnavailableError, get_llm
+from backend.llm import LLMConfigError, LLMOutputError, LLMUnavailableError, get_llm
 from data_ingestion.schemas import VisualElement
 
 log = logging.getLogger(__name__)
@@ -65,10 +65,13 @@ def describe_visuals(visuals: list[VisualElement], cache_dir: Path, enabled: boo
             v.description = neutralize(" ".join(p for p in parts if p))[0][:2500]
             v.legible = bool(data.get("legible", True))
             v.description_source = "gemini-vision"
-        except LLMUnavailableError as exc:
+        except LLMConfigError as exc:  # wrong key / model: no point trying the other figures
             log.warning("Figure descriptions skipped for the rest of this paper: %s", exc)
             v.description, v.description_source = "", "caption-only"
             stop = True
+        except LLMUnavailableError as exc:  # temporary (busy server / quota): skip this figure only
+            log.warning("No description for %s: %s", v.element_id, exc)
+            v.description, v.description_source = "", "caption-only"
         except (LLMOutputError, Exception) as exc:  # never fail ingestion on this
             log.warning("Visual description failed for %s: %s", v.element_id, type(exc).__name__)
             v.description = ""

@@ -48,6 +48,10 @@ class Settings:
     )
     llm_timeout_s: int = field(default_factory=lambda: _env_int("LLM_TIMEOUT_S", 60))
     llm_max_retries: int = field(default_factory=lambda: _env_int("LLM_MAX_RETRIES", 3))
+    # requests per minute allowed by your Gemini plan (free tier is ~15). 0 = no pacing.
+    llm_rpm: int = field(default_factory=lambda: _env_int("LLM_RPM", 14))
+    # longest wait (seconds) we accept when Gemini says "retry in N s" after a 429
+    llm_max_wait_s: int = field(default_factory=lambda: _env_int("LLM_MAX_WAIT_S", 90))
 
     # --- Embeddings / reranker ---
     # "qwen" = Qwen/Qwen3-Embedding-0.6B via sentence-transformers; "hash" = offline test embedder

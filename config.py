@@ -88,6 +88,15 @@ class Settings:
     # --- Features ---
     describe_figures: bool = field(default_factory=lambda: _env_bool("DESCRIBE_FIGURES", True))
     enable_ocr: bool = field(default_factory=lambda: _env_bool("ENABLE_OCR", True))
+    # OCR (Tesseract). TESSERACT_CMD is only needed when tesseract is not on PATH (common on Windows)
+    tesseract_cmd: str = field(default_factory=lambda: _env("TESSERACT_CMD"))
+    ocr_lang: str = field(default_factory=lambda: _env("OCR_LANG", "eng"))
+    ocr_dpi: int = field(default_factory=lambda: _env_int("OCR_DPI", 300))
+    ocr_min_conf: int = field(default_factory=lambda: _env_int("OCR_MIN_CONF", 40))
+    # a page with fewer extractable characters than this is treated as scanned
+    ocr_text_threshold: int = field(default_factory=lambda: _env_int("OCR_TEXT_THRESHOLD", 40))
+    # force OCR on every page (for testing / PDFs with a broken text layer)
+    ocr_force: bool = field(default_factory=lambda: _env_bool("OCR_FORCE", False))
     verify_citations_with_llm: bool = field(default_factory=lambda: _env_bool("VERIFY_CITATIONS_WITH_LLM", False))
 
     @property

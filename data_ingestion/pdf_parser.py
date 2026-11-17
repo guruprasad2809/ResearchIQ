@@ -71,10 +71,13 @@ def _union(rects: list[pymupdf.Rect]) -> pymupdf.Rect:
 
 
 class PDFParser:
-    def __init__(self, figures_dir: Path, enable_ocr: bool = True, zoom: float = 2.0):
+    def __init__(self, figures_dir: Path, enable_ocr: bool = True, zoom: float = 2.0,
+                 force_ocr: bool = False, ocr_text_threshold: int = 40):
         self.figures_dir = Path(figures_dir)
         self.enable_ocr = enable_ocr
         self.zoom = zoom
+        self.force_ocr = force_ocr
+        self.ocr_text_threshold = ocr_text_threshold
 
     # ------------------------------------------------------------------ public
     def parse(self, pdf_path: str | Path, paper_id: str, title: str | None = None) -> ParsedDocument:
@@ -91,11 +94,16 @@ class PDFParser:
             page = doc[pno]
             try:
                 blocks = self._page_blocks(page, pno + 1)
-                if sum(len(b.text) for b in blocks) < 40:
-                    ocr_block = self._ocr_page(page, pno + 1)
-                    if ocr_block is not None:
-                        blocks = [ocr_block]
+                if self.force_ocr or sum(len(b.text) for b in blocks) < self.ocr_text_threshold:
+                    ocr = self._ocr_page(page, pno + 1)
+                    if ocr is not None:
+                        blocks, conf = ocr
                         ocr_pages.append(pno + 1)
+                        if conf < 60:
+                            warnings.append(
+                                f"Page {pno + 1} was read with OCR at low confidence ({conf:.0f}%); "
+                                "some words may be wrong."
+                            )
                     elif page.get_images():
                         warnings.append(
                             f"Page {pno + 1} has no text layer and OCR is unavailable; its content is not searchable."
@@ -154,7 +162,10 @@ class PDFParser:
     def _reading_order(blocks: list[TextBlock], H: float) -> list[TextBlock]:
         """Two-column aware ordering: full-width blocks split the page into bands;
         inside a band the left column is read before the right column."""
-        two_col = sum(1 for b in blocks if b.column == 2) >= 2 and sum(1 for b in blocks if b.column == 1) >= 2
+        lefts = [b for b in blocks if b.column == 1]
+        rights = [b for b in blocks if b.column == 2]
+        # two-column page = some left-column block sits side by side with some right-column block
+        two_col = any(min(l.bbox[3], r.bbox[3]) - max(l.bbox[1], r.bbox[1]) > 5 for l in lefts for r in rights)
         if not two_col:
             return sorted(blocks, key=lambda b: (round(b.bbox[1], 1), b.bbox[0]))
         ordered: list[TextBlock] = []
@@ -178,24 +189,119 @@ class PDFParser:
         flush()
         return ordered
 
-    def _ocr_page(self, page: pymupdf.Page, page_no: int) -> TextBlock | None:
+    @staticmethod
+    def ocr_available() -> bool:
+        """True when pytesseract is installed and the tesseract program can be found."""
+        try:
+            import pytesseract
+
+            from config import settings
+
+            if settings.tesseract_cmd:
+                pytesseract.pytesseract.tesseract_cmd = settings.tesseract_cmd
+            pytesseract.get_tesseract_version()
+            return True
+        except Exception:
+            return False
+
+    def _ocr_page(self, page: pymupdf.Page, page_no: int) -> tuple[list[TextBlock], float] | None:
+        """OCR a page that has no text layer.
+
+        Uses Tesseract's word boxes (image_to_data), not just plain text, so each OCR paragraph
+        becomes a TextBlock with its real position and an estimated font size. That keeps the
+        rest of the pipeline working on scanned pages too: two-column reading order, heading
+        detection, figure/table caption detection and page-level citations.
+        Returns (blocks, mean_confidence) or None when OCR is off / unavailable / found nothing.
+        """
         if not self.enable_ocr:
             return None
         try:
             import pytesseract
-            from PIL import Image
+            from PIL import Image, ImageOps
         except ImportError:
             return None
+        from config import settings
+
+        if settings.tesseract_cmd:
+            pytesseract.pytesseract.tesseract_cmd = settings.tesseract_cmd
+        dpi = settings.ocr_dpi
         try:
-            pix = page.get_pixmap(dpi=200)
+            pix = page.get_pixmap(dpi=dpi)
             img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-            text = re.sub(r"\s+", " ", pytesseract.image_to_string(img)).strip()
-        except Exception as exc:  # tesseract binary missing, etc.
+            img = ImageOps.autocontrast(ImageOps.grayscale(img))  # simple clean-up for faded scans
+            data = pytesseract.image_to_data(img, lang=settings.ocr_lang, output_type=pytesseract.Output.DICT)
+        except Exception as exc:  # tesseract binary missing, language pack missing, etc.
             log.info("OCR failed on page %s: %s", page_no, exc)
             return None
-        if not text:
+
+        scale = 72.0 / dpi  # image pixels -> PDF points
+        # 1) collect OCR lines (word boxes grouped by Tesseract's block/paragraph/line ids)
+        lines: dict[tuple, dict] = {}
+        confs: list[float] = []
+        for i, word in enumerate(data["text"]):
+            word = (word or "").strip()
+            try:
+                conf = float(data["conf"][i])
+            except (TypeError, ValueError):
+                conf = -1
+            if not word or conf < settings.ocr_min_conf:
+                continue
+            confs.append(conf)
+            key = (data["block_num"][i], data["par_num"][i], data["line_num"][i])
+            x, y, w, h = data["left"][i], data["top"][i], data["width"][i], data["height"][i]
+            ln = lines.setdefault(key, {"words": [], "box": [x, y, x + w, y + h], "heights": []})
+            ln["words"].append(word)
+            b = ln["box"]
+            ln["box"] = [min(b[0], x), min(b[1], y), max(b[2], x + w), max(b[3], y + h)]
+            ln["heights"].append(h)
+        if not lines:
             return None
-        return TextBlock(page_no, text, tuple(page.rect), 0.0, False, False, 0)
+
+        # 2) merge lines into paragraphs, but start a new block at a heading, a caption,
+        #    or a clear font-size change (Tesseract often glues these to the next paragraph)
+        groups: list[list[dict]] = []
+        prev_par = None
+        for key in sorted(lines):
+            ln = lines[key]
+            ln["text"] = " ".join(ln["words"])
+            ln["size"] = statistics.median(ln["heights"])
+            par = key[:2]
+            starts_new = (
+                par != prev_par
+                or not groups
+                or _looks_like_heading(ln["text"])
+                or FIG_CAPTION_RE.match(ln["text"]) or TAB_CAPTION_RE.match(ln["text"])
+                or _looks_like_heading(groups[-1][-1]["text"])  # a heading line closes its block
+                or (  # a caption ends at its full stop; the table header after it is a new block
+                    (FIG_CAPTION_RE.match(groups[-1][0]["text"]) or TAB_CAPTION_RE.match(groups[-1][0]["text"]))
+                    and groups[-1][-1]["text"].rstrip().endswith(".")
+                )
+                or abs(ln["size"] - groups[-1][-1]["size"]) > 0.25 * max(ln["size"], groups[-1][-1]["size"])
+            )
+            if starts_new:
+                groups.append([ln])
+            else:
+                groups[-1].append(ln)
+            prev_par = par
+
+        W = page.rect.width
+        blocks: list[TextBlock] = []
+        for g in groups:
+            text = " ".join(ln["text"] for ln in g)
+            text = re.sub(r"-\s+(?=[a-z])", "", text)
+            text = re.sub(r"\s+", " ", text).strip()
+            if not text:
+                continue
+            x0 = min(ln["box"][0] for ln in g) * scale
+            y0 = min(ln["box"][1] for ln in g) * scale
+            x1 = max(ln["box"][2] for ln in g) * scale
+            y1 = max(ln["box"][3] for ln in g) * scale
+            # word-box height ~ font size in points (only the ratio to body text matters)
+            size = statistics.median([h for ln in g for h in ln["heights"]]) * scale * 1.1
+            col = 1 if x1 <= W * 0.56 else 2 if x0 >= W * 0.44 else 0
+            blocks.append(TextBlock(page_no, text, (x0, y0, x1, y1), round(size, 1), False, False, col))
+        mean_conf = sum(confs) / len(confs) if confs else 0.0
+        return self._reading_order(blocks, page.rect.height), mean_conf
 
     # ------------------------------------------------------------ visuals
     def _graphic_rects(self, page: pymupdf.Page) -> list[pymupdf.Rect]:

@@ -41,7 +41,8 @@ def ingest_pdf(pdf_path: Path, store: IndexStore, meta: dict[str, Any] | None = 
     meta = dict(meta or load_catalogue().get(pdf_path.name, {}))
     paper_id = meta.get("paper_id") or next_paper_id(store)
 
-    parser = PDFParser(settings.figures_dir, enable_ocr=settings.enable_ocr)
+    parser = PDFParser(settings.figures_dir, enable_ocr=settings.enable_ocr, force_ocr=settings.ocr_force,
+                       ocr_text_threshold=settings.ocr_text_threshold)
     parsed = parser.parse(pdf_path, paper_id, title=meta.get("title") or None)
     describe_visuals(parsed.visuals, settings.cache_dir, enabled=settings.describe_figures)
     chunks = SemanticTitleChunker(settings.chunk_max_words, settings.chunk_overlap_words).chunk(parsed)

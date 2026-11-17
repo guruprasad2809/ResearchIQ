@@ -19,13 +19,24 @@ from config import settings
 
 class QwenEmbedder:
     def __init__(self, model_name: str):
+        import torch
         from sentence_transformers import SentenceTransformer
 
-        self.model = SentenceTransformer(model_name)
-        self.dim = self.model.get_sentence_embedding_dimension()
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        # On CPU, bfloat16 (the model's default) is very slow on most laptops -> force float32.
+        dtype = torch.float32 if device == "cpu" else torch.float16
+        try:
+            self.model = SentenceTransformer(model_name, device=device, model_kwargs={"dtype": dtype})
+        except TypeError:  # older transformers use torch_dtype
+            self.model = SentenceTransformer(model_name, device=device, model_kwargs={"torch_dtype": dtype})
+        self.model.max_seq_length = 512  # our chunks are ~320 words; avoids huge padding on long ones
+        get_dim = getattr(self.model, "get_embedding_dimension", None) or self.model.get_sentence_embedding_dimension
+        self.dim = get_dim()
+        self.device = device
 
     def embed_documents(self, texts: list[str]) -> np.ndarray:
-        return np.asarray(self.model.encode(texts, batch_size=16, normalize_embeddings=True, show_progress_bar=False))
+        return np.asarray(self.model.encode(texts, batch_size=16, normalize_embeddings=True,
+                                            show_progress_bar=len(texts) > 32))
 
     def embed_query(self, text: str) -> np.ndarray:
         try:

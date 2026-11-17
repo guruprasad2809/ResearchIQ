@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import threading
 from pathlib import Path
 
 from backend.guardrails import neutralize
@@ -39,40 +40,61 @@ def _cache_key(v: VisualElement) -> str:
     return h.hexdigest()[:24]
 
 
-def describe_visuals(visuals: list[VisualElement], cache_dir: Path, enabled: bool = True) -> None:
+def _describe_one(llm, v: VisualElement, cache_dir: Path) -> None:
+    cache_file = cache_dir / f"vis_{_cache_key(v)}.json"
+    if cache_file.exists():
+        data = json.loads(cache_file.read_text())
+    else:
+        prompt = DESCRIBE_PROMPT.format(kind=v.kind, page=v.page, caption=neutralize(v.caption)[0][:800])
+        data = llm.generate_json(prompt, images=[v.image_path])
+        cache_file.write_text(json.dumps(data))
+    parts = [
+        data.get("summary", ""),
+        ("Components / flow: " + data["components_or_flow"]) if data.get("components_or_flow") else "",
+        ("Axes / legend: " + data["axes_and_legend"]) if data.get("axes_and_legend") else "",
+        ("Key values / trends: " + data["key_values_or_trends"]) if data.get("key_values_or_trends") else "",
+    ]
+    v.description = neutralize(" ".join(p for p in parts if p))[0][:2500]
+    v.legible = bool(data.get("legible", True))
+    v.description_source = "gemini-vision"
+
+
+def describe_visuals(visuals: list[VisualElement], cache_dir: Path, enabled: bool = True,
+                     concurrency: int | None = None) -> None:
+    """Describe every figure/table. Runs `LLM_CONCURRENCY` calls in parallel (the shared rate
+    limiter in backend/llm.py still caps requests per minute). Never fails ingestion."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from config import settings
+
     llm = get_llm()
     cache_dir.mkdir(parents=True, exist_ok=True)
-    stop = False  # set after a non-recoverable error (bad key / model) so we don't retry every figure
     for v in visuals:
-        if stop or not enabled or not getattr(llm, "available", False) or not v.image_path:
-            v.description = ""
-            v.description_source = "caption-only"
-            continue
-        cache_file = cache_dir / f"vis_{_cache_key(v)}.json"
+        v.description, v.description_source = "", "caption-only"
+    todo = [v for v in visuals if enabled and getattr(llm, "available", False) and v.image_path]
+    if not todo:
+        return
+    stop = threading.Event()  # set after a bad key / model so the remaining figures are skipped
+
+    def work(v: VisualElement) -> None:
+        if stop.is_set():
+            return
         try:
-            if cache_file.exists():
-                data = json.loads(cache_file.read_text())
-            else:
-                prompt = DESCRIBE_PROMPT.format(kind=v.kind, page=v.page, caption=neutralize(v.caption)[0][:800])
-                data = llm.generate_json(prompt, images=[v.image_path])
-                cache_file.write_text(json.dumps(data))
-            parts = [
-                data.get("summary", ""),
-                ("Components / flow: " + data["components_or_flow"]) if data.get("components_or_flow") else "",
-                ("Axes / legend: " + data["axes_and_legend"]) if data.get("axes_and_legend") else "",
-                ("Key values / trends: " + data["key_values_or_trends"]) if data.get("key_values_or_trends") else "",
-            ]
-            v.description = neutralize(" ".join(p for p in parts if p))[0][:2500]
-            v.legible = bool(data.get("legible", True))
-            v.description_source = "gemini-vision"
-        except LLMConfigError as exc:  # wrong key / model: no point trying the other figures
+            _describe_one(llm, v, cache_dir)
+        except LLMConfigError as exc:
             log.warning("Figure descriptions skipped for the rest of this paper: %s", exc)
-            v.description, v.description_source = "", "caption-only"
-            stop = True
+            stop.set()
         except LLMUnavailableError as exc:  # temporary (busy server / quota): skip this figure only
             log.warning("No description for %s: %s", v.element_id, exc)
-            v.description, v.description_source = "", "caption-only"
         except (LLMOutputError, Exception) as exc:  # never fail ingestion on this
             log.warning("Visual description failed for %s: %s", v.element_id, type(exc).__name__)
-            v.description = ""
-            v.description_source = "caption-only"
+
+    workers = max(1, concurrency or settings.llm_concurrency)
+    if workers == 1:
+        for v in todo:
+            work(v)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(work, todo))
+    done = sum(1 for v in visuals if v.description_source == "gemini-vision")
+    log.info("Described %s/%s figures/tables", done, len(visuals))

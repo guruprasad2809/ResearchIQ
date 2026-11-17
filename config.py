@@ -52,6 +52,8 @@ class Settings:
     llm_rpm: int = field(default_factory=lambda: _env_int("LLM_RPM", 14))
     # longest wait (seconds) we accept when Gemini says "retry in N s" after a 429
     llm_max_wait_s: int = field(default_factory=lambda: _env_int("LLM_MAX_WAIT_S", 90))
+    # how many figures are described at the same time (paid tier: 6-8; free tier: 1)
+    llm_concurrency: int = field(default_factory=lambda: _env_int("LLM_CONCURRENCY", 1))
 
     # --- Embeddings / reranker ---
     # "qwen" = Qwen/Qwen3-Embedding-0.6B via sentence-transformers; "hash" = offline test embedder

@@ -75,3 +75,35 @@ def test_bad_key_fails_fast(fake_genai):
     with pytest.raises(LLMConfigError):
         g.generate("hi")
     assert calls["n"] == 1
+
+
+def test_parallel_figure_descriptions(tmp_path, monkeypatch):
+    """Figures are described in parallel, results land on the right figure, failures stay isolated."""
+    import time as _t
+
+    import data_ingestion.figure_describer as fd
+    from backend.llm import LLMUnavailableError as Unavail
+    from data_ingestion.schemas import VisualElement
+
+    class SlowLLM:
+        available = True
+
+        def generate_json(self, prompt, images=None, **k):
+            _t.sleep(0.2)
+            if "BROKEN" in prompt:
+                raise Unavail("busy")
+            return {"summary": "about " + prompt.split('"')[1][:9], "legible": True}
+
+    monkeypatch.setattr(fd, "get_llm", lambda: SlowLLM())
+    vis = []
+    for i in range(8):
+        img = tmp_path / f"f{i}.png"
+        img.write_bytes(bytes([i]) * 10)
+        cap = "BROKEN fig" if i == 3 else f"Figure {i}: x"
+        vis.append(VisualElement(f"P_fig_{i}", "P", "figure", str(i), 1, cap, (0, 0, 1, 1), str(img)))
+    t0 = _t.time()
+    fd.describe_visuals(vis, tmp_path / "cache", concurrency=8)
+    assert _t.time() - t0 < 1.0  # 8 x 0.2s in parallel, not 1.6s in sequence
+    assert vis[3].description_source == "caption-only"
+    assert all(v.description_source == "gemini-vision" for i, v in enumerate(vis) if i != 3)
+    assert vis[5].description.startswith("about Figure 5")

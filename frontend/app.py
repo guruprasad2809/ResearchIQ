@@ -79,7 +79,7 @@ if health:
     cols[0].metric("Papers", health["papers"])
     cols[1].metric("Indexed chunks", health["chunks"])
     cols[2].metric("LLM", "configured" if health["llm_configured"] else "missing key")
-    cols[3].metric("Backend", "online")
+    cols[3].metric("OCR", "ready" if health.get("ocr_available") else "not available")
 
 tab_papers, tab_ask, tab_compare, tab_synth, tab_fig, tab_eval = st.tabs(
     ["📚 Papers", "💬 Ask", "⚖️ Compare", "🧭 Synthesis & gaps", "🖼️ Figures & tables", "📊 Evaluation"]
@@ -100,7 +100,9 @@ with tab_papers:
     papers = load_papers()
     if papers:
         df = pd.DataFrame(papers)[["paper_id", "short_name", "title", "year", "source_website", "identifier", "num_pages",
-                                   "num_chunks", "num_figures", "num_tables", "figures_described", "injection_flagged_chunks"]]
+                                   "num_chunks", "num_figures", "num_tables", "figures_described", "ocr_pages",
+                                   "injection_flagged_chunks"]]
+        df["ocr_pages"] = df["ocr_pages"].apply(lambda x: ", ".join(map(str, x)) if x else "")
         st.dataframe(df, use_container_width=True, hide_index=True)
         for p in papers:
             if p.get("warnings"):

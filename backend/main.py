@@ -80,8 +80,11 @@ class SynthesisRequest(BaseModel):
 @app.get("/health")
 def health():
     e = engine()
+    from data_ingestion.pdf_parser import PDFParser
+
     return {"status": "ok", "papers": len(e.store.papers), "chunks": len(e.store.chunks),
-            "llm_configured": bool(getattr(e.llm, "available", False))}
+            "llm_configured": bool(getattr(e.llm, "available", False)),
+            "ocr_available": settings.enable_ocr and PDFParser.ocr_available()}
 
 
 @app.get("/papers")

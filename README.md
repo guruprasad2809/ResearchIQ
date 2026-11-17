@@ -19,7 +19,8 @@ prompt-injection defence and a bigger evaluation.
 
 | Area | What it does |
 |---|---|
-| Paper ingestion | Upload many PDFs. Text is read with page numbers. Two-column layouts are put back into reading order. Headers, footers and the arXiv side stamp are removed. Scanned pages go through OCR (Tesseract) or get a clear warning. |
+| Paper ingestion | Upload many PDFs. Text is read with page numbers. Two-column layouts are put back into reading order. Headers, footers and the arXiv side stamp are removed. |
+| OCR for scanned pages | Pages with no text layer are read with Tesseract word boxes, so scanned pages keep columns, headings, figure/table captions and page citations. Low-confidence pages get a warning. See [`docs/ocr.md`](docs/ocr.md). |
 | Figures & tables | Every `Figure N:` / `Table N:` caption is found. The figure/table region is cropped to a PNG and kept together with its caption, page, labels inside the graphic, nearby text and every sentence in the paper that refers to it ("as shown in Figure 3"). Gemini Vision writes a description (marked as model-generated). |
 | Hybrid retrieval | BM25 + Qwen3 dense vectors (Qdrant) → Reciprocal Rank Fusion → cross-encoder rerank. Visual questions get an extra figure/table pass. "Figure 3 of LightRAG" pins that exact figure. Max 4 chunks per paper so cross-paper questions see several papers. |
 | Cited Q&A | Answers with `[P05, §3 Method, p.4]` / `[P06, Figure 1, p.3]` style citations. A claim-by-claim check scores whether each cited passage really supports the claim. You can open every source passage and figure image. |
@@ -117,7 +118,8 @@ P07/P08 from OpenReview, then add the OpenReview forum id / PMLR URL to the cata
 ## Setup
 
 Requirements: Python 3.10+, about 3 GB of disk for the models, a Gemini API key.
-Optional: `tesseract-ocr` for scanned pages, Docker for a Qdrant server.
+For scanned pages: Tesseract OCR (`brew install tesseract` / `sudo apt install tesseract-ocr` / Windows installer;
+on Windows set `TESSERACT_CMD` in `.env`). Full OCR guide: [`docs/ocr.md`](docs/ocr.md). Optional: Docker for a Qdrant server.
 
 ```bash
 git clone https://github.com/guruprasad2809/ResearchIQ.git
@@ -131,7 +133,9 @@ cp .env.example .env                                       # then put your GEMIN
 
 ```bash
 python scripts/download_papers.py                          # 1. get the 10 PDFs into data/papers/
-python scripts/ingest_papers.py --with-injection-test      # 2. parse + describe figures + index (+ adversarial test doc T99)
+python scripts/ingest_papers.py --with-injection-test --with-scanned P05
+                                                           # 2. parse + describe figures + index
+                                                           #    (+ adversarial test doc T99, + image-only copy of P05 for the OCR demo)
 uvicorn backend.main:app --port 8000                       # 3. API  (docs at http://localhost:8000/docs)
 streamlit run frontend/app.py                              # 4. UI   (http://localhost:8501)
 ```
@@ -160,7 +164,7 @@ Method, metric definitions and failure analysis: [`docs/evaluation.md`](docs/eva
 pytest -q
 ```
 
-36 offline tests (no API key, no network): PDF parsing (reading order, headings, figure/table crop,
+41 offline tests (no API key, no network; the 5 OCR tests need Tesseract and are skipped without it): PDF parsing, OCR of scanned pages (reading order, headings, figure/table crop,
 caption linking, references removed), file validation, path traversal, hybrid search and RRF, pinned
 figure references, metrics maths, injection detection and neutralisation, canary leak blocking,
 citation whitelist and claim checks, LLM outage and malformed output, and a full upload → ask → cite

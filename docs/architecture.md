@@ -40,8 +40,10 @@ sequenceDiagram
   numbers and the vertical arXiv stamp are dropped.
 * **Headings:** known section names (Abstract, Introduction, ..., Limitations), numbered bold headings
   (`3.2 Retrieval`), or text clearly bigger than the body font (median size of long paragraphs).
-* **Missing text:** a page with under 40 characters of text is OCR'd with Tesseract. If OCR isn't
-  installed, the paper gets a warning shown in the UI ("page 7 has no text layer…") instead of failing.
+* **Missing text (OCR):** a page with under 40 characters of text is rendered at 300 DPI and read with
+  Tesseract `image_to_data`. Word boxes become positioned blocks, split at headings, captions and font-size
+  changes, so scanned pages go through the same reading-order, heading and figure logic. Low confidence → warning.
+  No Tesseract → warning ("page 7 has no text layer…") instead of failing. Details: [`ocr.md`](ocr.md).
   A page that throws is skipped with a warning, so one bad page never stops a paper.
 
 ## 2. Figures and tables, and how they stay linked to their text

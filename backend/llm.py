@@ -100,6 +100,18 @@ class GeminiClient:
             except LLMOutputError:
                 raise
             except Exception as exc:  # network / quota / 5xx
+                msg = str(exc)
+                if "API_KEY_INVALID" in msg or "API key not valid" in msg or "PERMISSION_DENIED" in msg:
+                    # retrying cannot fix a wrong key -> fail fast with a clear, safe message
+                    log.error("Gemini rejected the API key; check GEMINI_API_KEY in .env")
+                    raise LLMUnavailableError(
+                        "The Gemini API key was rejected. Check GEMINI_API_KEY in your .env file."
+                    ) from None
+                if " 404 " in msg or "NOT_FOUND" in msg:
+                    log.error("Gemini model %s not found; check GEMINI_MODEL in .env", model or self.model)
+                    raise LLMUnavailableError(
+                        "The configured Gemini model was not found. Check GEMINI_MODEL in your .env file."
+                    ) from None
                 last_exc = exc
                 wait = 2 ** attempt
                 log.warning("Gemini call failed (attempt %s): %s; retrying in %ss", attempt + 1, type(exc).__name__, wait)

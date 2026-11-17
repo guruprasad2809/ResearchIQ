@@ -42,8 +42,9 @@ def _cache_key(v: VisualElement) -> str:
 def describe_visuals(visuals: list[VisualElement], cache_dir: Path, enabled: bool = True) -> None:
     llm = get_llm()
     cache_dir.mkdir(parents=True, exist_ok=True)
+    stop = False  # set after a non-recoverable error (bad key / model) so we don't retry every figure
     for v in visuals:
-        if not enabled or not getattr(llm, "available", False) or not v.image_path:
+        if stop or not enabled or not getattr(llm, "available", False) or not v.image_path:
             v.description = ""
             v.description_source = "caption-only"
             continue
@@ -64,7 +65,11 @@ def describe_visuals(visuals: list[VisualElement], cache_dir: Path, enabled: boo
             v.description = neutralize(" ".join(p for p in parts if p))[0][:2500]
             v.legible = bool(data.get("legible", True))
             v.description_source = "gemini-vision"
-        except (LLMUnavailableError, LLMOutputError, Exception) as exc:  # never fail ingestion on this
+        except LLMUnavailableError as exc:
+            log.warning("Figure descriptions skipped for the rest of this paper: %s", exc)
+            v.description, v.description_source = "", "caption-only"
+            stop = True
+        except (LLMOutputError, Exception) as exc:  # never fail ingestion on this
             log.warning("Visual description failed for %s: %s", v.element_id, type(exc).__name__)
             v.description = ""
             v.description_source = "caption-only"

@@ -1,0 +1,22 @@
+# secrets
+.env
+*.key
+
+# data: paper PDFs are not redistributable; indexes and caches are rebuilt locally
+data/*
+!data/papers/
+data/papers/*
+!data/papers/.gitkeep
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# misc
+.DS_Store
+.idea/
+.vscode/

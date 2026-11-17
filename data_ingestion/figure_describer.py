@@ -40,6 +40,19 @@ def _cache_key(v: VisualElement) -> str:
     return h.hexdigest()[:24]
 
 
+def _as_text(x) -> str:
+    """Models sometimes return lists or objects where we asked for text (common for tables)."""
+    if x is None:
+        return ""
+    if isinstance(x, str):
+        return x
+    if isinstance(x, dict):
+        return "; ".join(f"{k}: {_as_text(v)}" for k, v in x.items())
+    if isinstance(x, (list, tuple)):
+        return "; ".join(_as_text(i) for i in x)
+    return str(x)
+
+
 def _describe_one(llm, v: VisualElement, cache_dir: Path) -> None:
     cache_file = cache_dir / f"vis_{_cache_key(v)}.json"
     if cache_file.exists():
@@ -48,14 +61,19 @@ def _describe_one(llm, v: VisualElement, cache_dir: Path) -> None:
         prompt = DESCRIBE_PROMPT.format(kind=v.kind, page=v.page, caption=neutralize(v.caption)[0][:800])
         data = llm.generate_json(prompt, images=[v.image_path])
         cache_file.write_text(json.dumps(data))
+    if isinstance(data, list):  # some models wrap the object in a list
+        data = next((d for d in data if isinstance(d, dict)), {})
+    if not isinstance(data, dict):
+        data = {"summary": _as_text(data)}
     parts = [
-        data.get("summary", ""),
-        ("Components / flow: " + data["components_or_flow"]) if data.get("components_or_flow") else "",
-        ("Axes / legend: " + data["axes_and_legend"]) if data.get("axes_and_legend") else "",
-        ("Key values / trends: " + data["key_values_or_trends"]) if data.get("key_values_or_trends") else "",
+        _as_text(data.get("summary")),
+        ("Components / flow: " + _as_text(data["components_or_flow"])) if data.get("components_or_flow") else "",
+        ("Axes / legend: " + _as_text(data["axes_and_legend"])) if data.get("axes_and_legend") else "",
+        ("Key values / trends: " + _as_text(data["key_values_or_trends"])) if data.get("key_values_or_trends") else "",
     ]
     v.description = neutralize(" ".join(p for p in parts if p))[0][:2500]
-    v.legible = bool(data.get("legible", True))
+    leg = data.get("legible", True)
+    v.legible = leg if isinstance(leg, bool) else str(leg).strip().lower() not in {"false", "no", "0"}
     v.description_source = "gemini-vision"
 
 

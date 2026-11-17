@@ -107,3 +107,22 @@ def test_parallel_figure_descriptions(tmp_path, monkeypatch):
     assert vis[3].description_source == "caption-only"
     assert all(v.description_source == "gemini-vision" for i, v in enumerate(vis) if i != 3)
     assert vis[5].description.startswith("about Figure 5")
+
+
+def test_description_accepts_lists_and_objects(tmp_path, monkeypatch):
+    import data_ingestion.figure_describer as fd
+    from data_ingestion.schemas import VisualElement
+
+    class TableLLM:
+        available = True
+
+        def generate_json(self, prompt, images=None, **k):
+            return [{"summary": "Results table", "key_values_or_trends": [{"method": "A", "EM": 41.2}, "B wins"],
+                     "axes_and_legend": {"rows": "methods", "cols": "metrics"}, "legible": "true"}]
+
+    monkeypatch.setattr(fd, "get_llm", lambda: TableLLM())
+    img = tmp_path / "t.png"
+    img.write_bytes(b"x")
+    v = VisualElement("P_tab_2", "P", "table", "2", 1, "Table 2: results", (0, 0, 1, 1), str(img))
+    fd.describe_visuals([v], tmp_path / "c")
+    assert v.description_source == "gemini-vision" and "EM: 41.2" in v.description and "rows: methods" in v.description
